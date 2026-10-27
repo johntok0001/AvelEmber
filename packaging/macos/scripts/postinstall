@@ -1,0 +1,4 @@
+#!/bin/bash
+# Make hosts notice the new Audio Unit without a reboot.
+killall -9 AudioComponentRegistrar >/dev/null 2>&1 || true
+exit 0

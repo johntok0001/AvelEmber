@@ -1,0 +1,5 @@
+build/
+.tools/
+dist/
+shots/
+.DS_Store

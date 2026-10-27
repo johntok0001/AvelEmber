@@ -1,0 +1,139 @@
+name: Build Avel Ember installers
+
+# Every push to main builds both installers and publishes them on the Releases page
+# as "Avel Ember <version>" (the version comes from CMakeLists.txt; same version = release updated).
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS installer (.pkg)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build plugin
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          set -o pipefail
+          if ! cmake --build build --config Release --target AvelEmber_VST3 AvelEmber_AU --parallel 2>&1 | tee build.log; then
+            grep -E "error" build.log | head -10 | sed 's/^/::error::/'
+            exit 1
+          fi
+
+      - name: Validate Audio Unit
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/AvelEmber_artefacts/Release/AU/Avel Ember.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx AvEm Avel
+          rm -rf "$HOME/Library/Audio/Plug-Ins/Components/Avel Ember.component"
+
+      - name: Validate VST3 with pluginval
+        continue-on-error: true
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 5 --skip-gui-tests --validate-in-process --validate "build/AvelEmber_artefacts/Release/VST3/Avel Ember.vst3"
+
+      - name: Make installer
+        run: bash make_installer_mac.sh --no-build
+
+      - name: Test installer
+        run: |
+          sudo installer -pkg dist/AvelEmber-*-macOS.pkg -target /
+          test -f "/Library/Audio/Plug-Ins/VST3/Avel Ember.vst3/Contents/MacOS/Avel Ember"
+          test -d "/Library/Audio/Plug-Ins/Components/Avel Ember.component"
+          lipo -archs "/Library/Audio/Plug-Ins/VST3/Avel Ember.vst3/Contents/MacOS/Avel Ember"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AvelEmber-macOS-installer
+          path: dist/*.pkg
+
+  windows:
+    name: Windows installer (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build plugin
+        shell: bash
+        run: |
+          cmake -S . -B build
+          set -o pipefail
+          if ! cmake --build build --config Release --target AvelEmber_VST3 --parallel 2>&1 | tee build.log; then
+            grep -E "error|fatal" build.log | grep -v "warning" | head -10 | sed 's/^/::error::/'
+            exit 1
+          fi
+
+      - name: Validate VST3 with pluginval
+        continue-on-error: true
+        shell: bash
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip
+          7z x -y pluginval.zip > /dev/null
+          ./pluginval.exe --strictness-level 5 --skip-gui-tests --validate-in-process --validate "build/AvelEmber_artefacts/Release/VST3/Avel Ember.vst3"
+
+      - name: Install Inno Setup
+        run: choco upgrade innosetup -y --no-progress
+
+      - name: Make installer
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path CMakeLists.txt -Pattern 'project\(AvelEmber VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$v" packaging\windows\AvelEmber.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Test installer
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\AvelEmber-*-Windows-Setup.exe | Select-Object -First 1
+          Start-Process -FilePath $exe.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          if (-not (Test-Path "$env:CommonProgramFiles\VST3\Avel Ember.vst3\Contents\x86_64-win\Avel Ember.vst3")) { throw "plugin not installed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AvelEmber-Windows-installer
+          path: dist/*.exe
+
+  release:
+    name: Publish release
+    needs: [ macos, windows ]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(sed -n 's/^project(AvelEmber VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Avel Ember ${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: |
+            dist/*.pkg
+            dist/*.exe
+          body: |
+            **macOS:** скачайте `AvelEmber-${{ steps.ver.outputs.version }}-macOS.pkg`, дважды кликните и установите (VST3 + AU).
+            Если macOS не даёт открыть: Системные настройки → Конфиденциальность и безопасность → «Всё равно открыть».
+
+            **Windows:** скачайте `AvelEmber-${{ steps.ver.outputs.version }}-Windows-Setup.exe` и запустите (VST3).
+            Если появится «Windows защитила ваш компьютер»: Подробнее → Выполнить в любом случае.
+
+            После установки перезапустите DAW и пересканируйте плагины.

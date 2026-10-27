@@ -1,0 +1,9 @@
+#!/bin/bash
+# Remove an older Avel Ember of the same kind so the new one replaces it cleanly.
+# $1 is the path of the component package being installed.
+if [ "$(basename "$1")" = "AvelEmber-VST3.pkg" ]; then
+    rm -rf "/Library/Audio/Plug-Ins/VST3/Avel Ember.vst3"
+elif [ "$(basename "$1")" = "AvelEmber-AU.pkg" ]; then
+    rm -rf "/Library/Audio/Plug-Ins/Components/Avel Ember.component"
+fi
+exit 0

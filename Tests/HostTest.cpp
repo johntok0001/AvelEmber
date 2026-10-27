@@ -34,16 +34,21 @@ int main (int argc, char** argv)
     juce::AudioBuffer<float> buf (2, 512);
     juce::MidiBuffer midi;
     juce::Random r;
-    double peak = 0;
+    double peak = 0, sumIn = 0, sumOut = 0;
     for (int b = 0; b < 400; ++b)
     {
         for (int ch = 0; ch < 2; ++ch)
             for (int i = 0; i < 512; ++i)
                 buf.setSample (ch, i, (r.nextFloat() * 2 - 1) * 0.1f);
+        sumIn += std::pow (buf.getRMSLevel (0, 0, 512), 2.0);
         inst->processBlock (buf, midi);
+        sumOut += std::pow (buf.getRMSLevel (0, 0, 512), 2.0);
         peak = juce::jmax (peak, (double) buf.getMagnitude (0, 512));
     }
-    std::cout << "processed 400 blocks, output peak " << peak << (peak > 0.0 && peak <= 0.1001 ? "  OK" : "  FAIL") << std::endl;
+    // a saturator adds harmonics, so the peak may rise; with Auto Gain on (default) the loudness must match
+    const double diffDb = 10.0 * std::log10 ((sumOut + 1.0e-20) / (sumIn + 1.0e-20));
+    std::cout << "processed 400 blocks, output peak " << peak << ", loudness change " << diffDb << " dB"
+              << (peak > 0.0 && std::abs (diffDb) < 1.0 ? "  OK" : "  FAIL") << std::endl;
 
     juce::MemoryBlock state;
     inst->getStateInformation (state);
